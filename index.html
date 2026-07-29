@@ -505,6 +505,10 @@ input,textarea,select{font-family:inherit;outline:none}
     <button class="btn btn-outline" id="addCatBtn">📁 新分类</button>
     <button class="btn btn-outline" id="batchDishBtn" style="color:#ff4d4f;border-color:#ff4d4f">☑️ 批量删除</button>
   </div>
+  <div style="margin-bottom:12px;display:flex;gap:8px">
+    <button class="btn btn-outline" id="backupBtn" style="flex:1;color:#1890ff;border-color:#1890ff">☁️ 备份数据</button>
+    <button class="btn btn-outline" id="restoreBtn" style="flex:1;color:#52c41a;border-color:#52c41a">📥 恢复数据</button>
+  </div>
   <div id="menuList"></div>
 </div>
 
@@ -1443,6 +1447,91 @@ function exitBatchMode(){
   renderMenuMgmt();
 }
 
+// ========== 数据备份与恢复 ==========
+function showBackupModal(){
+  const data={
+    dishes:DB.getDishes(),
+    orders:DB.getOrders(),
+    config:DB.getConfig(),
+    backupTime:new Date().toISOString()
+  };
+  const code=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+  $('#modalMask').innerHTML=`
+    <div class="modal-title">☁️ 数据备份</div>
+    <div style="padding:16px 0">
+      <p style="font-size:13px;color:#666;margin-bottom:12px">
+        这是你的数据备份码（包含所有菜品、订单和设置）。<br>
+        <b>点击下方文字全选复制</b>，然后到另一台设备的"恢复数据"中粘贴。
+      </p>
+      <textarea id="backupCode" readonly style="width:100%;height:180px;font-size:11px;padding:10px;border:1px solid var(--border);border-radius:8px;background:#f9f9f9;font-family:monospace;word-break:break-all" onclick="this.select()">${code}</textarea>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-outline" style="flex:1" onclick="copyBackupCode()">📋 复制全部</button>
+        <button class="btn" style="flex:1" onclick="closeModal()">完成</button>
+      </div>
+      <p style="font-size:12px;color:#999;margin-top:10px">
+        💡 提示：浏览器和桌面App数据不互通，换设备或重新添加到桌面后用此功能同步。
+      </p>
+    </div>
+  `;
+  $('#modalMask').classList.add('show');
+}
+
+function copyBackupCode(){
+  const ta=$('#backupCode');
+  ta.select();
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(ta.value).then(()=>showToast('✅ 已复制到剪贴板'));
+  }else{
+    document.execCommand('copy');
+    showToast('✅ 已复制');
+  }
+}
+
+function showRestoreModal(){
+  $('#modalMask').innerHTML=`
+    <div class="modal-title">📥 恢复数据</div>
+    <div style="padding:16px 0">
+      <p style="font-size:13px;color:#666;margin-bottom:12px">
+        将之前备份的数据码粘贴到下方，点击恢复。<br>
+        <b style="color:#ff4d4f">注意：恢复会覆盖当前所有数据！</b>
+      </p>
+      <textarea id="restoreCode" placeholder="在这里粘贴备份码..." style="width:100%;height:180px;font-size:11px;padding:10px;border:1px solid var(--border);border-radius:8px;background:#f9f9f9;font-family:monospace;word-break:break-all"></textarea>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-outline" style="flex:1" onclick="closeModal()">取消</button>
+        <button class="btn" style="flex:1;background:#ff4d4f" onclick="doRestore()">恢复数据</button>
+      </div>
+    </div>
+  `;
+  $('#modalMask').classList.add('show');
+}
+
+function doRestore(){
+  const code=$('#restoreCode').value.trim();
+  if(!code){showToast('请粘贴备份码');return}
+  try{
+    const json=decodeURIComponent(escape(atob(code)));
+    const data=JSON.parse(json);
+    if(!data.dishes){showToast('备份码格式错误');return}
+    if(!confirmDialog('确定恢复数据吗？这将覆盖当前所有菜品和订单！'))return;
+    DB.saveDishes(data.dishes);
+    if(data.orders)DB.saveOrders(data.orders);
+    if(data.config)DB.saveConfig(data.config);
+    state.dishes=DB.getDishes();
+    state.orders=DB.getOrders();
+    state.cart={items:[],tableNumber:'',orderNote:''};
+    DB.saveCart(state.cart);
+    renderCatTabs();
+    renderDishes();
+    renderCart();
+    renderOrders();
+    renderMenuMgmt();
+    closeModal();
+    showToast('✅ 数据恢复成功！');
+  }catch(e){
+    showToast('❌ 备份码无效，请检查');
+  }
+}
+
 // ========== 菜品拖拽排序 ==========
 let _dragDishId=null;
 
@@ -1792,6 +1881,8 @@ function init(){
     if(!state.menuBatchMode)state.menuSelected={};
     renderMenuMgmt();
   });
+  $('#backupBtn').addEventListener('click',showBackupModal);
+  $('#restoreBtn').addEventListener('click',showRestoreModal);
 
   // 点击弹窗遮罩关闭
   $('#modalMask').addEventListener('click',e=>{
@@ -1855,6 +1946,8 @@ window.deleteSelected=deleteSelected;
 window.exitBatchMode=exitBatchMode;
 window.saveDishForm=saveDishForm;
 window.addCategory=addCategory;
+window.copyBackupCode=copyBackupCode;
+window.doRestore=doRestore;
 
 // ========== Service Worker 自动更新 ==========
 const APP_VERSION = '2.6';
