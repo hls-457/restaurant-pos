@@ -308,8 +308,13 @@ input,textarea,select{font-family:inherit;outline:none}
 .dish-mgmt-item{
   display:flex;align-items:center;justify-content:space-between;
   padding:10px 14px;border-bottom:1px solid var(--border);
+  transition:background .15s,opacity .15s,transform .15s;
 }
 .dish-mgmt-item:last-child{border-bottom:none}
+.dish-mgmt-item.dragging{opacity:.4;background:var(--primary-light)}
+.dish-mgmt-item.drag-over{border-top:3px solid var(--primary);padding-top:7px}
+.dish-mgmt-item .drag-handle{font-size:18px;color:#ccc;cursor:grab;padding:0 4px;flex-shrink:0;user-select:none}
+.dish-mgmt-item .drag-handle:active{cursor:grabbing}
 .dish-mgmt-info{flex:1;min-width:0}
 .dish-mgmt-name{font-size:14px;font-weight:500}
 .dish-mgmt-price{font-size:13px;color:var(--primary);font-weight:600}
@@ -702,7 +707,7 @@ function renderCatTabs(){
 }
 
 function renderDishes(){
-  let list=state.dishes.filter(d=>d.available);
+  let list=state.dishes.filter(d=>d.available).sort((a,b)=>a.sortOrder-b.sortOrder);
   if(state.currentCategory!=='全部')list=list.filter(d=>d.category===state.currentCategory);
   if(state.searchKeyword){
     const kw=state.searchKeyword.toLowerCase();
@@ -1379,7 +1384,8 @@ function renderMenuMgmt(){
           </div>
         </div>`;
       }
-      return `<div class="dish-mgmt-item">
+      return `<div class="dish-mgmt-item" draggable="true" data-dish-id="${d.id}" ondragstart="onDishDragStart(event,'${d.id}')" ondragover="onDishDragOver(event,'${d.id}')" ondragleave="onDishDragLeave(event)" ondrop="onDishDrop(event,'${d.id}')" ontouchstart="onDishTouchStart(event,'${d.id}')" ontouchmove="onDishTouchMove(event)" ontouchend="onDishTouchEnd(event)">
+        <span class="drag-handle">⠿</span>
         <div class="dish-mgmt-info">
           <div class="dish-mgmt-name">${escapeHtml(d.name)} ${d.available?'':'<span style="color:#999;font-size:12px">(已下架)</span>'}</div>
           <div class="dish-mgmt-price">${d.price}</div>
@@ -1434,6 +1440,93 @@ function exitBatchMode(){
   state.menuBatchMode=false;
   state.menuSelected={};
   renderMenuMgmt();
+}
+
+// ========== 菜品拖拽排序 ==========
+let _dragDishId=null;
+
+function onDishDragStart(e,dishId){
+  _dragDishId=dishId;
+  e.target.classList.add('dragging');
+  e.dataTransfer.effectAllowed='move';
+  e.dataTransfer.setData('text/plain',dishId);
+}
+
+function onDishDragOver(e,dishId){
+  if(!_dragDishId||_dragDishId===dishId)return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect='move';
+  // 找到当前 item 元素
+  const item=e.currentTarget;
+  if(item)item.classList.add('drag-over');
+}
+
+function onDishDragLeave(e){
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function onDishDrop(e,targetDishId){
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if(!_dragDishId||_dragDishId===targetDishId)return;
+  // 交换两个菜品的 sortOrder
+  const fromDish=state.dishes.find(d=>d.id===_dragDishId);
+  const toDish=state.dishes.find(d=>d.id===targetDishId);
+  if(!fromDish||!toDish)return;
+  // 确保同一分类内排序
+  if(fromDish.category!==toDish.category){
+    showToast('只能在同一分类内排序');
+    _dragDishId=null;
+    return;
+  }
+  const tmp=fromDish.sortOrder;
+  fromDish.sortOrder=toDish.sortOrder;
+  toDish.sortOrder=tmp;
+  DB.saveDishes(state.dishes);
+  _dragDishId=null;
+  renderMenuMgmt();
+  showToast('顺序已更新');
+}
+
+// 长按触屏拖拽支持（移动端）
+let _touchDragId=null;
+let _touchTimer=null;
+
+function onDishTouchStart(e,dishId){
+  _touchDragId=dishId;
+  _touchTimer=setTimeout(()=>{
+    // 长按触发，添加拖拽样式
+    e.currentTarget.classList.add('dragging');
+    navigator.vibrate&&navigator.vibrate(50);
+  },500);
+}
+
+function onDishTouchMove(e){
+  if(!_touchDragId)return;
+  clearTimeout(_touchTimer);
+  const touch=e.touches[0];
+  const target=document.elementFromPoint(touch.clientX,touch.clientY);
+  // 清除所有 drag-over
+  document.querySelectorAll('.dish-mgmt-item.drag-over').forEach(el=>el.classList.remove('drag-over'));
+  // 找到当前悬停的 item
+  const item=target?target.closest('.dish-mgmt-item'):null;
+  if(item&&item.dataset.dishId&&item.dataset.dishId!==_touchDragId){
+    item.classList.add('drag-over');
+  }
+}
+
+function onDishTouchEnd(e){
+  clearTimeout(_touchTimer);
+  if(!_touchDragId)return;
+  document.querySelectorAll('.dish-mgmt-item.dragging').forEach(el=>el.classList.remove('dragging'));
+  document.querySelectorAll('.dish-mgmt-item.drag-over').forEach(el=>el.classList.remove('drag-over'));
+  const touch=e.changedTouches[0];
+  const target=document.elementFromPoint(touch.clientX,touch.clientY);
+  const dropItem=target?target.closest('.dish-mgmt-item'):null;
+  if(dropItem&&dropItem.dataset.dishId&&dropItem.dataset.dishId!==_touchDragId){
+    onDishDrop({preventDefault:()=>{},currentTarget:dropItem},dropItem.dataset.dishId);
+  }
+  _touchDragId=null;
 }
 
 function toggleDishAvail(id){
@@ -1745,6 +1838,13 @@ window.closeModal=closeModal;
 window.toggleDishAvail=toggleDishAvail;
 window.editDish=editDish;
 window.deleteDish=deleteDish;
+window.onDishDragStart=onDishDragStart;
+window.onDishDragOver=onDishDragOver;
+window.onDishDragLeave=onDishDragLeave;
+window.onDishDrop=onDishDrop;
+window.onDishTouchStart=onDishTouchStart;
+window.onDishTouchMove=onDishTouchMove;
+window.onDishTouchEnd=onDishTouchEnd;
 window.toggleSelectDish=toggleSelectDish;
 window.toggleSelectAll=toggleSelectAll;
 window.deleteSelected=deleteSelected;
