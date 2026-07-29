@@ -628,23 +628,25 @@ const DB = {
 // ========== 云端同步 ==========
 const CLOUD = {
   _timer: null,
-  _repo: 'hls-457/restaurant-pos',  // 仓库
+  _pushing: false,  // 正在推送中
+  _repo: 'hls-457/restaurant-pos',
   _branch: 'main',
-  _file: 'data.json',               // 数据文件
-  _sha: null,                       // 文件SHA（更新需要）
+  _file: 'data.json',
 
   getConfig(){
     try{
       return {
         token: localStorage.getItem('_cloud_token') || '',
-        lastSync: localStorage.getItem('_cloud_lastSync') || '',
+        lastSync: localStorage.getItem('_cloud_lastSync') || '',   // ISO时间
+        lastSyncTs: parseInt(localStorage.getItem('_cloud_lastSyncTs')||'0'),  // 毫秒时间戳
         enabled: localStorage.getItem('_cloud_enabled') === '1',
       };
-    }catch(e){ return {token:'',lastSync:'',enabled:false}; }
+    }catch(e){ return {token:'',lastSync:'',lastSyncTs:0,enabled:false}; }
   },
   saveConfig(cfg){
     localStorage.setItem('_cloud_token', cfg.token||'');
     localStorage.setItem('_cloud_lastSync', cfg.lastSync||'');
+    localStorage.setItem('_cloud_lastSyncTs', String(cfg.lastSyncTs||0));
     localStorage.setItem('_cloud_enabled', cfg.enabled?'1':'0');
   },
   isConfigured(){
@@ -656,36 +658,50 @@ const CLOUD = {
     const cfg=this.getConfig();
     if(!cfg.token) return null;
     try{
-      // 先获取文件信息（拿SHA和内容）
       const resp=await fetch('https://api.github.com/repos/'+this._repo+'/contents/'+this._file+'?ref='+this._branch+'&t='+Date.now(), {
         headers:{'Authorization':'token '+cfg.token, 'Accept':'application/vnd.github.v3+json'},
         cache:'no-store'
       });
-      if(resp.status===404) return {empty:true}; // 文件不存在
+      if(resp.status===404) return {empty:true};
       if(!resp.ok) return null;
       const result=await resp.json();
-      this._sha=result.sha;
       if(!result.content) return {empty:true};
-      // base64解码
       const text=atob(result.content.replace(/\n/g,''));
-      return JSON.parse(decodeURIComponent(escape(text)));
+      const data=JSON.parse(decodeURIComponent(escape(text)));
+      data._sha=result.sha;  // 保存SHA供下次push使用
+      return data;
     }catch(e){ return null; }
   },
 
   // 推送数据到云端
   async push(){
     const cfg=this.getConfig();
-    if(!cfg.token) return false;
-    const data={
-      dishes: DB.getDishes(),
-      orders: DB.getOrders(),
-      config: DB.getConfig(),
-      syncTime: new Date().toISOString()
-    };
+    if(!cfg.token || this._pushing) return false;
+    this._pushing=true;
     try{
+      // 先获取最新SHA（避免冲突）
+      let sha=null;
+      try{
+        const resp=await fetch('https://api.github.com/repos/'+this._repo+'/contents/'+this._file+'?ref='+this._branch, {
+          headers:{'Authorization':'token '+cfg.token, 'Accept':'application/vnd.github.v3+json'},
+          cache:'no-store'
+        });
+        if(resp.ok){
+          const result=await resp.json();
+          sha=result.sha;
+        }
+      }catch(e){}
+
+      const data={
+        dishes: DB.getDishes(),
+        orders: DB.getOrders(),
+        config: DB.getConfig(),
+        syncTime: new Date().toISOString()
+      };
       const content=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
-      const body={message:'sync data', content:content, branch:this._branch};
-      if(this._sha) body.sha=this._sha;
+      const body={message:'sync: '+new Date().toLocaleString(), content:content, branch:this._branch};
+      if(sha) body.sha=sha;
+
       const resp=await fetch('https://api.github.com/repos/'+this._repo+'/contents/'+this._file, {
         method:'PUT',
         headers:{'Authorization':'token '+cfg.token, 'Accept':'application/vnd.github.v3+json', 'Content-Type':'application/json'},
@@ -693,42 +709,69 @@ const CLOUD = {
       });
       const result=await resp.json();
       if(result.content && result.content.sha){
-        this._sha=result.content.sha;
-        const now=new Date().toLocaleString();
-        this.saveConfig({token:cfg.token, lastSync:now, enabled:true});
+        const now=new Date();
+        this.saveConfig({
+          token:cfg.token,
+          lastSync:now.toLocaleString(),
+          lastSyncTs:now.getTime(),
+          enabled:true
+        });
         return true;
       }
       return false;
     }catch(e){ return false; }
+    finally{ this._pushing=false; }
   },
 
-  // 防抖推送
+  // 防抖推送（3秒内只推一次）
   schedulePush(){
+    if(!this.isConfigured()) return;
     if(this._timer) clearTimeout(this._timer);
     this._timer=setTimeout(async ()=>{
       const ok=await this.push();
-      if(ok) showToast('☁️ 已自动同步');
+      if(ok) showToast('☁️ 已自动同步', 1500);
     }, 3000);
   },
 
-  // 开启同步
-  async enable(token){
-    this.saveConfig({token:token, lastSync:'', enabled:true});
-    // 先尝试拉取
+  // 检查云端是否有更新（不覆盖本地）
+  async checkUpdate(){
+    const cfg=this.getConfig();
+    if(!cfg.token) return null;
     const cloudData=await this.pull();
-    if(cloudData && !cloudData.empty && cloudData.dishes){
-      // 云端有数据，覆盖本地
-      this._sha=null; // 重置sha，下次push时获取
-      return {success:true, hasData:true, data:cloudData};
+    if(!cloudData || cloudData.empty) return null;
+    const cloudTime=cloudData.syncTime?new Date(cloudData.syncTime).getTime():0;
+    // 云端比上次同步时间更新 = 有新数据
+    if(cloudTime > cfg.lastSyncTs){
+      return cloudData;
     }
-    // 云端无数据，上传本地
-    const ok=await this.push();
-    return {success:ok, hasData:false};
+    return null;
+  },
+
+  // 用云端数据覆盖本地
+  applyCloudData(cloudData){
+    if(!cloudData || !cloudData.dishes) return false;
+    DB.saveDishes(cloudData.dishes);
+    if(cloudData.orders) DB.saveOrders(cloudData.orders);
+    if(cloudData.config) DB.saveConfig(cloudData.config);
+    // 更新同步时间
+    const cloudTime=cloudData.syncTime?new Date(cloudData.syncTime).getTime():Date.now();
+    const cfg=this.getConfig();
+    this.saveConfig({
+      token:cfg.token,
+      lastSync:new Date(cloudTime).toLocaleString(),
+      lastSyncTs:cloudTime,
+      enabled:true
+    });
+    // 刷新页面数据
+    state.dishes=DB.getDishes();
+    state.orders=DB.getOrders();
+    state.cart=DB.getCart();
+    renderCatTabs();renderDishes();renderCart();renderOrders();renderMenuMgmt();
+    return true;
   },
 
   disable(){
-    this.saveConfig({token:'', lastSync:'', enabled:false});
-    this._sha=null;
+    this.saveConfig({token:'',lastSync:'',lastSyncTs:0,enabled:false});
   }
 };
 
@@ -1032,10 +1075,13 @@ function renderOrders(){
     return;
   }
   const html=list.map(o=>{
-    const itemsHtml=o.items.map(i=>`<div class="order-dish-row">
-      <span>${escapeHtml(i.name)} ×${i.qty}${i.note?` <span class="note">（${escapeHtml(i.note)}）</span>`:''}</span>
+    const itemsHtml=o.items.map(i=>{
+      const addonText=i.addons&&i.addons.length?i.addons.map(a=>`+${escapeHtml(a.name)}`).join('、'):'';
+      return `<div class="order-dish-row">
+      <span>${escapeHtml(i.name)}${addonText?` <span style="font-size:12px;color:#fa8c16">（${addonText}）</span>`:''} ×${i.qty}${i.note?` <span class="note">（${escapeHtml(i.note)}）</span>`:''}</span>
       <span>¥${(i.price*i.qty).toFixed(2)}</span>
-    </div>`).join('');
+    </div>`;
+    }).join('');
     const noteHtml=o.orderNote?`<div class="order-card-note">📝 ${escapeHtml(o.orderNote)}</div>`:'';
     const payTag=o.payment?`<span class="payment-tag">${o.payment.method==='cash'?'现金':o.payment.method==='wechat'?'微信':'支付宝'}</span>`:'';
     const statusHtml=o.status==='pending'
@@ -1210,10 +1256,13 @@ function renderCheckoutModal(){
         ${fmtTimeFull(order.createdAt)}
       </div>
       <div class="card" style="background:#fafafa;margin-bottom:14px">
-        ${order.items.map(i=>`<div class="order-dish-row">
-          <span>${escapeHtml(i.name)} ×${i.qty}${i.note?` <span class="note">（${escapeHtml(i.note)}）</span>`:''}</span>
+        ${order.items.map(i=>{
+          const addonText=i.addons&&i.addons.length?i.addons.map(a=>`+${escapeHtml(a.name)}`).join('、'):'';
+          return `<div class="order-dish-row">
+          <span>${escapeHtml(i.name)}${addonText?` <span style="font-size:12px;color:#fa8c16">（${addonText}）</span>`:''} ×${i.qty}${i.note?` <span class="note">（${escapeHtml(i.note)}）</span>`:''}</span>
           <span>¥${(i.price*i.qty).toFixed(2)}</span>
-        </div>`).join('')}
+        </div>`;
+        }).join('')}
       </div>
       <div class="pay-amount-box">
         <div class="label">应付金额</div>
@@ -1644,20 +1693,40 @@ function showCloudModal(){
   const cfg=CLOUD.getConfig();
   const isOn=CLOUD.isConfigured();
   const lastSync=cfg.lastSync||'未同步';
+  const hasUpdate=window._cloudUpdate;
+  
+  let updateHtml='';
+  if(hasUpdate){
+    updateHtml=`
+      <div style="padding:12px;border-radius:8px;margin-bottom:12px;background:#e6f7ff;border:1px solid #91d5ff">
+        <div style="font-weight:600;color:#1890ff;margin-bottom:6px">📌 云端有新数据</div>
+        <div style="font-size:13px;color:#666;margin-bottom:8px">
+          云端：${hasUpdate.count} 个菜品（${hasUpdate.time}）<br>
+          本地：${hasUpdate.localCount} 个菜品
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" style="flex:1;background:#1890ff" onclick="cloudDownloadUpdate()">⬇️ 下载云端数据</button>
+          <button class="btn btn-outline" style="flex:1" onclick="cloudIgnoreUpdate()">忽略</button>
+        </div>
+      </div>`;
+  }
+
   $('#modalMask').innerHTML=`
     <div class="modal-title">🔄 云端同步</div>
     <div style="padding:16px 0">
-      <div id="cloudStatus" style="padding:12px;border-radius:8px;margin-bottom:12px;background:${isOn?'#f6ffed':'#fff7e6'};border:1px solid ${isOn?'#b7eb8f':'#ffd591'}">
+      <div style="padding:12px;border-radius:8px;margin-bottom:12px;background:${isOn?'#f6ffed':'#fff7e6'};border:1px solid ${isOn?'#b7eb8f':'#ffd591'}">
         <div style="font-weight:600;color:${isOn?'#52c41a':'#fa8c16'}">${isOn?'✅ 云端同步已开启':'⚠️ 云端同步未开启'}</div>
         <div style="font-size:12px;color:#666;margin-top:4px">上次同步：${lastSync}</div>
       </div>
+      ${updateHtml}
       <p style="font-size:13px;color:#666;margin-bottom:12px">
         开启后，菜品和订单会<b>自动同步</b>到云端。<br>
-        在另一台设备上用同一个 Token 开启，即可自动拉取数据。<br>
-        <span style="color:#999">无需手动备份恢复！</span>
+        在另一台设备上用同一个Token开启，即可自动同步。<br>
+        <span style="color:#999">每次修改后3秒自动上传，打开App时自动检查更新</span>
       </p>
       ${isOn?`
-        <button class="btn btn-outline" style="width:100%;margin-bottom:8px" onclick="manualSync()">🔄 立即同步一次</button>
+        <button class="btn btn-outline" style="width:100%;margin-bottom:8px" onclick="manualSync()">🔄 立即上传一次</button>
+        <button class="btn btn-outline" style="width:100%;margin-bottom:8px" onclick="manualPull()">⬇️ 从云端下载</button>
         <button class="btn" style="width:100%;background:#ff4d4f" onclick="disableCloud()">关闭云端同步</button>
       `:`
         <input id="cloudTokenInput" type="password" placeholder="粘贴 GitHub Token (ghp_...)" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:13px">
@@ -1673,8 +1742,8 @@ async function enableCloud(){
   const token=$('#cloudTokenInput').value.trim();
   if(!token){showToast('请输入GitHub Token');return}
   showToast('正在检查云端...');
-  // 先保存token配置但暂不开启
-  CLOUD.saveConfig({token:token, lastSync:'', enabled:true});
+  // 保存token，先不开启
+  CLOUD.saveConfig({token:token, lastSync:'', lastSyncTs:0, enabled:true});
   // 检查云端是否有数据
   const cloudData=await CLOUD.pull();
   if(cloudData && !cloudData.empty && cloudData.dishes){
@@ -1686,22 +1755,19 @@ async function enableCloud(){
       <div class="modal-title">🔄 云端已有数据</div>
       <div style="padding:16px 0">
         <div style="padding:12px;border-radius:8px;margin-bottom:12px;background:#fff7e6;border:1px solid #ffd591">
-          <div style="font-size:13px;color:#666;margin-bottom:8px">
+          <div style="font-size:13px;color:#666;margin-bottom:6px">
             云端有 <b>${cloudCount}</b> 个菜品（同步时间：${cloudTime}）<br>
             本地有 <b>${localCount}</b> 个菜品
           </div>
-          <div style="font-size:13px;color:#ff4d4f;font-weight:600;margin-bottom:12px">
-            请选择以哪个为准：
-          </div>
+          <div style="font-size:13px;color:#ff4d4f;font-weight:600;margin-bottom:12px">请选择以哪个为准：</div>
         </div>
         <button class="btn" style="width:100%;margin-bottom:8px;background:#52c41a" onclick="cloudUploadFirst()">⬆️ 以本地为准（上传覆盖云端）</button>
-        <p style="font-size:12px;color:#999;margin-bottom:12px;padding-left:4px">选择此项会把你当前的菜品上传到云端</p>
+        <p style="font-size:12px;color:#999;margin-bottom:12px;padding-left:4px">把当前设备的数据上传到云端</p>
         <button class="btn" style="width:100%;margin-bottom:8px;background:#1890ff" onclick="cloudDownloadFirst()">⬇️ 以云端为准（下载覆盖本地）</button>
-        <p style="font-size:12px;color:#999;margin-bottom:12px;padding-left:4px">选择此项会用云端数据替换当前本地数据</p>
+        <p style="font-size:12px;color:#999;margin-bottom:12px;padding-left:4px">用云端数据替换当前设备数据</p>
         <button class="btn btn-outline" style="width:100%" onclick="disableCloud()">取消，不同步</button>
       </div>
     `;
-    // 暂存云端数据供选择后使用
     window._cloudPendingData=cloudData;
   }else{
     // 云端无数据，直接上传本地
@@ -1722,6 +1788,7 @@ async function cloudUploadFirst(){
   const ok=await CLOUD.push();
   if(ok){
     showToast('✅ 本地数据已上传到云端！');
+    window._cloudUpdate=null;
     closeModal();
   }else{
     showToast('❌ 上传失败');
@@ -1732,21 +1799,46 @@ async function cloudDownloadFirst(){
   const cloudData=window._cloudPendingData;
   if(!cloudData){showToast('数据已过期，请重试');return}
   if(!confirmDialog('确定用云端数据覆盖本地吗？当前本地数据将丢失！'))return;
-  DB.saveDishes(cloudData.dishes);
-  if(cloudData.orders)DB.saveOrders(cloudData.orders);
-  if(cloudData.config)DB.saveConfig(cloudData.config);
-  state.dishes=DB.getDishes();
-  state.orders=DB.getOrders();
-  renderCatTabs();renderDishes();renderCart();renderOrders();renderMenuMgmt();
+  CLOUD.applyCloudData(cloudData);
   showToast('✅ 已从云端下载数据！');
+  window._cloudUpdate=null;
+  closeModal();
+}
+
+async function cloudDownloadUpdate(){
+  const update=window._cloudUpdate;
+  if(!update||!update.data){showToast('更新数据已过期');return}
+  if(!confirmDialog('确定下载云端数据覆盖本地吗？'))return;
+  CLOUD.applyCloudData(update.data);
+  showToast('✅ 已从云端同步！');
+  window._cloudUpdate=null;
+  closeModal();
+}
+
+function cloudIgnoreUpdate(){
+  window._cloudUpdate=null;
+  showToast('已忽略云端更新');
   closeModal();
 }
 
 async function manualSync(){
-  showToast('正在同步...');
+  showToast('正在上传...');
   const ok=await CLOUD.push();
-  if(ok) showToast('✅ 同步成功！');
-  else showToast('❌ 同步失败');
+  if(ok) showToast('✅ 上传成功！');
+  else showToast('❌ 上传失败');
+}
+
+async function manualPull(){
+  showToast('正在下载...');
+  const cloudData=await CLOUD.pull();
+  if(cloudData && !cloudData.empty && cloudData.dishes){
+    if(!confirmDialog('确定用云端数据覆盖本地吗？'))return;
+    CLOUD.applyCloudData(cloudData);
+    showToast('✅ 下载成功！');
+    closeModal();
+  }else{
+    showToast('❌ 云端无数据');
+  }
 }
 
 function disableCloud(){
@@ -1981,7 +2073,10 @@ function showDishForm(dish){
       <div class="form-group">
         <label class="form-label">可加项（加料）<span style="font-weight:400;color:#999;font-size:12px">点菜时弹出供选择</span></label>
         <div id="addonList" style="margin-bottom:8px"></div>
-        <button class="btn btn-outline btn-sm" style="width:100%" onclick="addAddonRow()">➕ 添加加料项</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" style="flex:1" onclick="addAddonRow()">➕ 逐个添加</button>
+          <button class="btn btn-outline btn-sm" style="flex:1;color:#722ed1;border-color:#722ed1" onclick="showBatchAddon()">📝 批量添加</button>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1997,6 +2092,75 @@ function showDishForm(dish){
   // 渲染已有的加料项
   if(addons.length){
     addons.forEach(a=>addAddonRow(a.name,a.price));
+  }
+}
+
+function showBatchAddon(){
+  // 检查是否已经展开了批量输入框
+  const existing=$('#batchAddonArea');
+  if(existing){
+    // 已展开，直接应用
+    applyBatchAddon();
+    return;
+  }
+  // 在加料列表下方插入批量输入框
+  const area=document.createElement('div');
+  area.id='batchAddonArea';
+  area.style.cssText='margin-top:8px;padding:12px;border:2px solid #722ed1;border-radius:8px;background:#f9f0ff';
+  
+  // 读取当前已填的加料
+  const cur=getAddonData();
+  const existingText=cur.map(a=>`${a.name} ${a.price}`).join('\n');
+  
+  area.innerHTML=`
+    <div style="font-size:13px;color:#666;margin-bottom:6px">每行一个加料，格式：<b>名称 价格</b></div>
+    <textarea id="batchAddonInput" style="width:100%;height:120px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.8" placeholder="加肉 5&#10;加粉 2&#10;加蛋 3">${existingText}</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn btn-sm" style="flex:2" onclick="applyBatchAddon()">✅ 确认添加</button>
+      <button class="btn btn-sm btn-gray" style="flex:1" onclick="cancelBatchAddon()">取消</button>
+    </div>
+  `;
+  // 插入到 addonList 之前
+  const addonList=$('#addonList');
+  addonList.parentNode.insertBefore(area, addonList);
+  // 隐藏逐个添加的行
+  addonList.style.display='none';
+  $('#batchAddonInput').focus();
+}
+
+function cancelBatchAddon(){
+  const area=$('#batchAddonArea');
+  if(area)area.remove();
+  $('#addonList').style.display='';
+}
+
+function applyBatchAddon(){
+  const input=$('#batchAddonInput');
+  if(!input){return}
+  const text=input.value.trim();
+  if(!text){showToast('请输入加料内容');return}
+  const lines=text.split('\n').map(l=>l.trim()).filter(l=>l);
+  // 清空现有加料列表
+  $('#addonList').innerHTML='';
+  let count=0;
+  for(let line of lines){
+    const parts=line.split(/[\s,，\t]+/);
+    if(parts.length<2)continue;
+    const price=parseFloat(parts[parts.length-1]);
+    const name=parts.slice(0,-1).join(' ');
+    if(name && !isNaN(price) && price>=0){
+      addAddonRow(name,price);
+      count++;
+    }
+  }
+  // 移除批量输入区域
+  const area=$('#batchAddonArea');
+  if(area)area.remove();
+  $('#addonList').style.display='';
+  if(count>0){
+    showToast(`已添加 ${count} 个加料项`);
+  }else{
+    showToast('格式不对，请用"名称 价格"格式');
   }
 }
 
@@ -2172,27 +2336,17 @@ function init(){
   state.orders=DB.getOrders();
   state.cart=DB.getCart();
 
-  // 启动时从云端拉取最新数据
+  // 启动时后台检查云端是否有更新（不自动覆盖本地）
   if(CLOUD.isConfigured()){
-    CLOUD.pull().then(cloudData=>{
+    CLOUD.checkUpdate().then(cloudData=>{
       if(cloudData && cloudData.dishes){
-        // 云端有数据，检查是否比本地新
-        const cloudSyncTime=cloudData.syncTime?new Date(cloudData.syncTime).getTime():0;
-        const localLastSync=localStorage.getItem('_cloud_lastSync')?new Date(localStorage.getItem('_cloud_lastSync')).getTime():0;
-        // 如果云端数据比本地新，或者本地是初始数据，用云端覆盖
-        if(cloudSyncTime>localLastSync || state.dishes.length<=30){
-          DB.saveDishes(cloudData.dishes);
-          if(cloudData.orders)DB.saveOrders(cloudData.orders);
-          if(cloudData.config)DB.saveConfig(cloudData.config);
-          state.dishes=DB.getDishes();
-          state.orders=DB.getOrders();
-          renderCatTabs();
-          renderDishes();
-          renderCart();
-          renderOrders();
-          renderMenuMgmt();
-          showToast('☁️ 已从云端同步');
-        }
+        // 云端有新数据，提示用户
+        const cloudTime=cloudData.syncTime?new Date(cloudData.syncTime).toLocaleString():'未知';
+        const cloudCount=cloudData.dishes.length;
+        const localCount=state.dishes.length;
+        showToast('☁️ 云端有新数据（'+cloudCount+'个菜品），点同步设置查看', 3000);
+        // 暂存供弹窗使用
+        window._cloudUpdate={data:cloudData, time:cloudTime, count:cloudCount, localCount:localCount};
       }
     }).catch(()=>{});
   }
@@ -2322,7 +2476,15 @@ window.doRestore=doRestore;
 window.enableCloud=enableCloud;
 window.manualSync=manualSync;
 window.disableCloud=disableCloud;
+window.cloudUploadFirst=cloudUploadFirst;
+window.cloudDownloadFirst=cloudDownloadFirst;
+window.cloudDownloadUpdate=cloudDownloadUpdate;
+window.cloudIgnoreUpdate=cloudIgnoreUpdate;
+window.manualPull=manualPull;
 window.addAddonRow=addAddonRow;
+window.showBatchAddon=showBatchAddon;
+window.applyBatchAddon=applyBatchAddon;
+window.cancelBatchAddon=cancelBatchAddon;
 window.confirmAddToCart=confirmAddToCart;
 
 // ========== Service Worker 自动更新 ==========
