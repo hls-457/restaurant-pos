@@ -509,6 +509,9 @@ input,textarea,select{font-family:inherit;outline:none}
     <button class="btn btn-outline" id="backupBtn" style="flex:1;color:#1890ff;border-color:#1890ff">☁️ 备份数据</button>
     <button class="btn btn-outline" id="restoreBtn" style="flex:1;color:#52c41a;border-color:#52c41a">📥 恢复数据</button>
   </div>
+  <div style="margin-bottom:12px;display:flex;gap:8px">
+    <button class="btn btn-outline" id="cloudBtn" style="flex:1;color:#722ed1;border-color:#722ed1">🔄 云端同步设置</button>
+  </div>
   <div id="menuList"></div>
 </div>
 
@@ -589,7 +592,7 @@ const DEFAULT_DISHES = [
 const DB = {
   _k:{dishes:'rp_dishes',orders:'rp_orders',cart:'rp_cart',config:'rp_config'},
   _get(k,def){try{const v=localStorage.getItem(k);return v?JSON.parse(v):def}catch(e){return def}},
-  _set(k,v){localStorage.setItem(k,JSON.stringify(v))},
+  _set(k,v){localStorage.setItem(k,JSON.stringify(v));if(CLOUD&&CLOUD.isConfigured())CLOUD.schedulePush()},
 
   getDishes(){
     let d=this._get(this._k.dishes,null);
@@ -619,6 +622,113 @@ const DB = {
   getTodayStart(){
     const now=new Date();
     return new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime();
+  }
+};
+
+// ========== 云端同步 ==========
+const CLOUD = {
+  _timer: null,
+  _repo: 'hls-457/restaurant-pos',  // 仓库
+  _branch: 'main',
+  _file: 'data.json',               // 数据文件
+  _sha: null,                       // 文件SHA（更新需要）
+
+  getConfig(){
+    try{
+      return {
+        token: localStorage.getItem('_cloud_token') || '',
+        lastSync: localStorage.getItem('_cloud_lastSync') || '',
+        enabled: localStorage.getItem('_cloud_enabled') === '1',
+      };
+    }catch(e){ return {token:'',lastSync:'',enabled:false}; }
+  },
+  saveConfig(cfg){
+    localStorage.setItem('_cloud_token', cfg.token||'');
+    localStorage.setItem('_cloud_lastSync', cfg.lastSync||'');
+    localStorage.setItem('_cloud_enabled', cfg.enabled?'1':'0');
+  },
+  isConfigured(){
+    return this.getConfig().enabled && !!this.getConfig().token;
+  },
+
+  // 从云端拉取 data.json
+  async pull(){
+    const cfg=this.getConfig();
+    if(!cfg.token) return null;
+    try{
+      // 先获取文件信息（拿SHA和内容）
+      const resp=await fetch('https://api.github.com/repos/'+this._repo+'/contents/'+this._file+'?ref='+this._branch+'&t='+Date.now(), {
+        headers:{'Authorization':'token '+cfg.token, 'Accept':'application/vnd.github.v3+json'},
+        cache:'no-store'
+      });
+      if(resp.status===404) return {empty:true}; // 文件不存在
+      if(!resp.ok) return null;
+      const result=await resp.json();
+      this._sha=result.sha;
+      if(!result.content) return {empty:true};
+      // base64解码
+      const text=atob(result.content.replace(/\n/g,''));
+      return JSON.parse(decodeURIComponent(escape(text)));
+    }catch(e){ return null; }
+  },
+
+  // 推送数据到云端
+  async push(){
+    const cfg=this.getConfig();
+    if(!cfg.token) return false;
+    const data={
+      dishes: DB.getDishes(),
+      orders: DB.getOrders(),
+      config: DB.getConfig(),
+      syncTime: new Date().toISOString()
+    };
+    try{
+      const content=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+      const body={message:'sync data', content:content, branch:this._branch};
+      if(this._sha) body.sha=this._sha;
+      const resp=await fetch('https://api.github.com/repos/'+this._repo+'/contents/'+this._file, {
+        method:'PUT',
+        headers:{'Authorization':'token '+cfg.token, 'Accept':'application/vnd.github.v3+json', 'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+      const result=await resp.json();
+      if(result.content && result.content.sha){
+        this._sha=result.content.sha;
+        const now=new Date().toLocaleString();
+        this.saveConfig({token:cfg.token, lastSync:now, enabled:true});
+        return true;
+      }
+      return false;
+    }catch(e){ return false; }
+  },
+
+  // 防抖推送
+  schedulePush(){
+    if(this._timer) clearTimeout(this._timer);
+    this._timer=setTimeout(async ()=>{
+      const ok=await this.push();
+      if(ok) showToast('☁️ 已自动同步');
+    }, 3000);
+  },
+
+  // 开启同步
+  async enable(token){
+    this.saveConfig({token:token, lastSync:'', enabled:true});
+    // 先尝试拉取
+    const cloudData=await this.pull();
+    if(cloudData && !cloudData.empty && cloudData.dishes){
+      // 云端有数据，覆盖本地
+      this._sha=null; // 重置sha，下次push时获取
+      return {success:true, hasData:true, data:cloudData};
+    }
+    // 云端无数据，上传本地
+    const ok=await this.push();
+    return {success:ok, hasData:false};
+  },
+
+  disable(){
+    this.saveConfig({token:'', lastSync:'', enabled:false});
+    this._sha=null;
   }
 };
 
@@ -1448,6 +1558,73 @@ function exitBatchMode(){
 }
 
 // ========== 数据备份与恢复 ==========
+function showCloudModal(){
+  const cfg=CLOUD.getConfig();
+  const isOn=CLOUD.isConfigured();
+  const lastSync=cfg.lastSync||'未同步';
+  $('#modalMask').innerHTML=`
+    <div class="modal-title">🔄 云端同步</div>
+    <div style="padding:16px 0">
+      <div id="cloudStatus" style="padding:12px;border-radius:8px;margin-bottom:12px;background:${isOn?'#f6ffed':'#fff7e6'};border:1px solid ${isOn?'#b7eb8f':'#ffd591'}">
+        <div style="font-weight:600;color:${isOn?'#52c41a':'#fa8c16'}">${isOn?'✅ 云端同步已开启':'⚠️ 云端同步未开启'}</div>
+        <div style="font-size:12px;color:#666;margin-top:4px">上次同步：${lastSync}</div>
+      </div>
+      <p style="font-size:13px;color:#666;margin-bottom:12px">
+        开启后，菜品和订单会<b>自动同步</b>到云端。<br>
+        在另一台设备上用同一个 Token 开启，即可自动拉取数据。<br>
+        <span style="color:#999">无需手动备份恢复！</span>
+      </p>
+      ${isOn?`
+        <button class="btn btn-outline" style="width:100%;margin-bottom:8px" onclick="manualSync()">🔄 立即同步一次</button>
+        <button class="btn" style="width:100%;background:#ff4d4f" onclick="disableCloud()">关闭云端同步</button>
+      `:`
+        <input id="cloudTokenInput" type="password" placeholder="粘贴 GitHub Token (ghp_...)" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:13px">
+        <button class="btn" style="width:100%" onclick="enableCloud()">开启云端同步</button>
+      `}
+    </div>
+    <button class="btn btn-outline" style="width:100%;margin-top:8px" onclick="closeModal()">关闭</button>
+  `;
+  $('#modalMask').classList.add('show');
+}
+
+async function enableCloud(){
+  const token=$('#cloudTokenInput').value.trim();
+  if(!token){showToast('请输入GitHub Token');return}
+  showToast('正在开启...');
+  const result=await CLOUD.enable(token);
+  if(result.success){
+    if(result.hasData && result.data){
+      // 云端有数据，覆盖本地
+      DB.saveDishes(result.data.dishes);
+      if(result.data.orders)DB.saveOrders(result.data.orders);
+      if(result.data.config)DB.saveConfig(result.data.config);
+      state.dishes=DB.getDishes();
+      state.orders=DB.getOrders();
+      renderCatTabs();renderDishes();renderCart();renderOrders();renderMenuMgmt();
+      showToast('✅ 已从云端同步数据！');
+    }else{
+      showToast('✅ 云端同步已开启，数据已上传！');
+    }
+    closeModal();
+  }else{
+    showToast('❌ 开启失败，请检查Token是否正确');
+  }
+}
+
+async function manualSync(){
+  showToast('正在同步...');
+  const ok=await CLOUD.push();
+  if(ok) showToast('✅ 同步成功！');
+  else showToast('❌ 同步失败');
+}
+
+function disableCloud(){
+  if(!confirmDialog('确定关闭云端同步吗？本地数据不会丢失，但不再自动同步。'))return;
+  CLOUD.disable();
+  showToast('已关闭云端同步');
+  closeModal();
+}
+
 function showBackupModal(){
   const data={
     dishes:DB.getDishes(),
@@ -1827,6 +2004,31 @@ function init(){
   state.orders=DB.getOrders();
   state.cart=DB.getCart();
 
+  // 启动时从云端拉取最新数据
+  if(CLOUD.isConfigured()){
+    CLOUD.pull().then(cloudData=>{
+      if(cloudData && cloudData.dishes){
+        // 云端有数据，检查是否比本地新
+        const cloudSyncTime=cloudData.syncTime?new Date(cloudData.syncTime).getTime():0;
+        const localLastSync=localStorage.getItem('_cloud_lastSync')?new Date(localStorage.getItem('_cloud_lastSync')).getTime():0;
+        // 如果云端数据比本地新，或者本地是初始数据，用云端覆盖
+        if(cloudSyncTime>localLastSync || state.dishes.length<=30){
+          DB.saveDishes(cloudData.dishes);
+          if(cloudData.orders)DB.saveOrders(cloudData.orders);
+          if(cloudData.config)DB.saveConfig(cloudData.config);
+          state.dishes=DB.getDishes();
+          state.orders=DB.getOrders();
+          renderCatTabs();
+          renderDishes();
+          renderCart();
+          renderOrders();
+          renderMenuMgmt();
+          showToast('☁️ 已从云端同步');
+        }
+      }
+    }).catch(()=>{});
+  }
+
   // Tab 栏切换
   $$('.tabbar-item').forEach(t=>{
     t.addEventListener('click',()=>switchPage(t.dataset.page));
@@ -1883,6 +2085,7 @@ function init(){
   });
   $('#backupBtn').addEventListener('click',showBackupModal);
   $('#restoreBtn').addEventListener('click',showRestoreModal);
+  $('#cloudBtn').addEventListener('click',showCloudModal);
 
   // 点击弹窗遮罩关闭
   $('#modalMask').addEventListener('click',e=>{
@@ -1948,6 +2151,9 @@ window.saveDishForm=saveDishForm;
 window.addCategory=addCategory;
 window.copyBackupCode=copyBackupCode;
 window.doRestore=doRestore;
+window.enableCloud=enableCloud;
+window.manualSync=manualSync;
+window.disableCloud=disableCloud;
 
 // ========== Service Worker 自动更新 ==========
 const APP_VERSION = '2.6';
