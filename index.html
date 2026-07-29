@@ -746,6 +746,7 @@ const CLOUD = {
         dishes: DB.getDishes(),
         orders: DB.getOrders(),
         config: DB.getConfig(),
+        addons: DB.getAddons(),
         syncTime: new Date().toISOString()
       };
       const content=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
@@ -803,6 +804,7 @@ const CLOUD = {
     DB.saveDishes(cloudData.dishes);
     if(cloudData.orders) DB.saveOrders(cloudData.orders);
     if(cloudData.config) DB.saveConfig(cloudData.config);
+    if(cloudData.addons) DB.saveAddons(cloudData.addons);
     // 更新同步时间
     const cloudTime=cloudData.syncTime?new Date(cloudData.syncTime).getTime():Date.now();
     const cfg=this.getConfig();
@@ -1918,6 +1920,7 @@ function showBackupModal(){
     dishes:DB.getDishes(),
     orders:DB.getOrders(),
     config:DB.getConfig(),
+    addons:DB.getAddons(),
     backupTime:new Date().toISOString()
   };
   const code=btoa(unescape(encodeURIComponent(JSON.stringify(data))));
@@ -1981,6 +1984,7 @@ function doRestore(){
     DB.saveDishes(data.dishes);
     if(data.orders)DB.saveOrders(data.orders);
     if(data.config)DB.saveConfig(data.config);
+    if(data.addons)DB.saveAddons(data.addons);
     state.dishes=DB.getDishes();
     state.orders=DB.getOrders();
     state.cart={items:[],tableNumber:'',orderNote:''};
