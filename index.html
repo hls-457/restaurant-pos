@@ -511,6 +511,7 @@ input,textarea,select{font-family:inherit;outline:none}
   </div>
   <div style="margin-bottom:12px;display:flex;gap:8px">
     <button class="btn btn-outline" id="cloudBtn" style="flex:1;color:#722ed1;border-color:#722ed1">🔄 云端同步设置</button>
+    <button class="btn btn-outline" id="addonMgmtBtn" style="flex:1;color:#fa8c16;border-color:#fa8c16">🧂 加料项管理</button>
   </div>
   <div id="menuList"></div>
 </div>
@@ -590,7 +591,7 @@ const DEFAULT_DISHES = [
 
 // ========== 数据层 ==========
 const DB = {
-  _k:{dishes:'rp_dishes',orders:'rp_orders',cart:'rp_cart',config:'rp_config'},
+  _k:{dishes:'rp_dishes',orders:'rp_orders',cart:'rp_cart',config:'rp_config',addons:'rp_addons'},
   _get(k,def){try{const v=localStorage.getItem(k);return v?JSON.parse(v):def}catch(e){return def}},
   _set(k,v){localStorage.setItem(k,JSON.stringify(v));if(CLOUD&&CLOUD.isConfigured())CLOUD.schedulePush()},
 
@@ -607,6 +608,9 @@ const DB = {
   saveOrders(o){this._set(this._k.orders,o)},
   getCart(){return this._get(this._k.cart,{items:[],tableNumber:'',orderNote:''})},
   saveCart(c){this._set(this._k.cart,c)},
+  // 全局加料项
+  getAddons(){return this._get(this._k.addons,[])},
+  saveAddons(a){this._set(this._k.addons,a)},
   getConfig(){
     let c=this._get(this._k.config,null);
     if(!c)c={orderSeq:0,printerName:''};
@@ -2071,12 +2075,9 @@ function showDishForm(dish){
         <input type="text" class="form-input" id="dishFormNewCat" placeholder="输入新分类名">
       </div>
       <div class="form-group">
-        <label class="form-label">可加项（加料）<span style="font-weight:400;color:#999;font-size:12px">点菜时弹出供选择</span></label>
+        <label class="form-label">可加项（加料）<span style="font-weight:400;color:#999;font-size:12px">勾选启用的加料</span></label>
         <div id="addonList" style="margin-bottom:8px"></div>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-outline btn-sm" style="flex:1" onclick="addAddonRow()">➕ 逐个添加</button>
-          <button class="btn btn-outline btn-sm" style="flex:1;color:#722ed1;border-color:#722ed1" onclick="showBatchAddon()">📝 批量添加</button>
-        </div>
+        <p style="font-size:12px;color:#999;margin-top:4px">在"加料项管理"中统一添加/编辑加料，这里只需勾选</p>
       </div>
     </div>
     <div class="modal-footer">
@@ -2089,10 +2090,149 @@ function showDishForm(dish){
   $('#dishFormCat').onchange=function(){
     $('#newCatGroup').style.display=this.value==='__new__'?'block':'none';
   };
-  // 渲染已有的加料项
-  if(addons.length){
-    addons.forEach(a=>addAddonRow(a.name,a.price));
+  // 渲染加料勾选列表（从全局加料项中勾选）
+  renderDishAddonPicker(addons);
+}
+
+// 渲染菜品编辑中的加料勾选区
+function renderDishAddonPicker(selectedAddons){
+  const allAddons=DB.getAddons();
+  const list=$('#addonList');
+  if(!allAddons.length){
+    list.innerHTML='<div style="font-size:13px;color:#999;padding:8px 0">暂无加料项，请先在"加料项管理"中添加</div>';
+    return;
   }
+  const selectedNames=(selectedAddons||[]).map(a=>a.name);
+  list.innerHTML=allAddons.map((a,i)=>{
+    const checked=selectedNames.includes(a.name);
+    return `<label style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
+      <span style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" class="dish-addon-checkbox" data-name="${escapeHtml(a.name)}" ${checked?'checked':''} style="width:18px;height:18px">
+        <span style="font-size:14px">${escapeHtml(a.name)}</span>
+      </span>
+      <span style="color:var(--primary);font-weight:600">+${a.price}元</span>
+    </label>`;
+  }).join('');
+}
+
+// 获取菜品编辑中选中的加料
+function getDishSelectedAddons(){
+  const allAddons=DB.getAddons();
+  const checkboxes=document.querySelectorAll('.dish-addon-checkbox');
+  const selected=[];
+  checkboxes.forEach(cb=>{
+    if(cb.checked){
+      const name=cb.dataset.name;
+      const addon=allAddons.find(a=>a.name===name);
+      if(addon)selected.push({name:addon.name,price:addon.price});
+    }
+  });
+  return selected;
+}
+
+// ========== 全局加料项管理 ==========
+function showAddonMgmt(){
+  const addons=DB.getAddons();
+  const addonHtml=addons.map((a,i)=>`
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center" data-idx="${i}">
+      <input type="text" class="form-input mgmt-addon-name" value="${escapeHtml(a.name)}" placeholder="加料名" style="flex:2">
+      <input type="number" class="form-input mgmt-addon-price" value="${a.price}" placeholder="价格" step="0.01" min="0" style="flex:1">
+      <button class="btn btn-sm btn-gray" onclick="this.parentElement.remove()" style="flex:0 0 auto;padding:8px 12px">✕</button>
+    </div>
+  `).join('');
+  $('#modalMask').innerHTML=`
+    <div class="modal">
+      <div class="modal-header">🧂 加料项管理</div>
+      <div class="modal-body">
+        <p style="font-size:13px;color:#666;margin-bottom:12px">
+          在这里统一添加所有加料项，每个菜品只需勾选启用哪些。<br>
+          <span style="color:#999">修改价格后，所有使用了该加料的菜品自动更新</span>
+        </p>
+        <div style="margin-bottom:8px">
+          <button class="btn btn-outline btn-sm" style="width:100%" onclick="addMgmtAddonRow()">➕ 添加加料项</button>
+        </div>
+        <div id="mgmtAddonList">${addonHtml}</div>
+        <button class="btn btn-outline btn-sm" style="width:100%;color:#722ed1;border-color:#722ed1" onclick="showBatchMgmtAddon()">📝 批量输入</button>
+        <div id="batchMgmtArea" style="display:none;margin-top:8px">
+          <textarea id="batchMgmtInput" style="width:100%;height:120px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.8" placeholder="加肉 5&#10;加粉 2&#10;加蛋 3"></textarea>
+          <button class="btn btn-sm" style="width:100%;margin-top:4px" onclick="applyBatchMgmtAddon()">✅ 确认批量添加</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-gray" style="flex:1" onclick="closeModal()">取消</button>
+        <button class="btn" style="flex:2" onclick="saveMgmtAddons()">保存</button>
+      </div>
+    </div>
+  `;
+  $('#modalMask').classList.add('show');
+}
+
+function addMgmtAddonRow(name,price){
+  const list=$('#mgmtAddonList');
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;gap:8px;margin-bottom:8px;align-items:center';
+  row.innerHTML=`
+    <input type="text" class="form-input mgmt-addon-name" value="${name?escapeHtml(name):''}" placeholder="加料名" style="flex:2">
+    <input type="number" class="form-input mgmt-addon-price" value="${price!==undefined?price:''}" placeholder="价格" step="0.01" min="0" style="flex:1">
+    <button class="btn btn-sm btn-gray" onclick="this.parentElement.remove()" style="flex:0 0 auto;padding:8px 12px">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+function showBatchMgmtAddon(){
+  const area=$('#batchMgmtArea');
+  area.style.display=area.style.display==='none'?'block':'none';
+  if(area.style.display==='block')$('#batchMgmtInput').focus();
+}
+
+function applyBatchMgmtAddon(){
+  const text=$('#batchMgmtInput').value.trim();
+  if(!text){showToast('请输入加料内容');return}
+  const lines=text.split('\n').map(l=>l.trim()).filter(l=>l);
+  let count=0;
+  for(let line of lines){
+    const parts=line.split(/[\s,，\t]+/);
+    if(parts.length<2)continue;
+    const price=parseFloat(parts[parts.length-1]);
+    const name=parts.slice(0,-1).join(' ');
+    if(name && !isNaN(price) && price>=0){
+      addMgmtAddonRow(name,price);
+      count++;
+    }
+  }
+  if(count>0){
+    showToast(`已添加 ${count} 个加料项`);
+    $('#batchMgmtInput').value='';
+    $('#batchMgmtArea').style.display='none';
+  }else{
+    showToast('格式不对，请用"名称 价格"格式');
+  }
+}
+
+function saveMgmtAddons(){
+  const rows=$('#mgmtAddonList').children;
+  const addons=[];
+  for(let r of rows){
+    const name=r.querySelector('.mgmt-addon-name').value.trim();
+    const price=parseFloat(r.querySelector('.mgmt-addon-price').value);
+    if(name && !isNaN(price) && price>=0){
+      addons.push({name,price});
+    }
+  }
+  DB.saveAddons(addons);
+  // 同步更新所有菜品引用的加料价格
+  state.dishes.forEach(d=>{
+    if(d.addons&&d.addons.length){
+      d.addons=d.addons.map(da=>{
+        const global=addons.find(a=>a.name===da.name);
+        return global?{name:global.name,price:global.price}:da;
+      });
+    }
+  });
+  DB.saveDishes(state.dishes);
+  renderMenuMgmt();
+  closeModal();
+  showToast('✅ 加料项已保存');
 }
 
 function showBatchAddon(){
@@ -2203,13 +2343,13 @@ function saveDishForm(){
   if(state.editingDish){
     const d=state.editingDish;
     d.name=name;d.price=price;d.category=cat;
-    d.addons=getAddonData();
+    d.addons=getDishSelectedAddons();
     showToast('已保存修改');
   }else{
     const newDish={
       id:'d'+Date.now(),
       name,price,category:cat,
-      addons:getAddonData(),
+      addons:getDishSelectedAddons(),
       available:true,
       sortOrder:state.dishes.length,
       createdAt:Date.now(),
@@ -2408,6 +2548,7 @@ function init(){
   $('#backupBtn').addEventListener('click',showBackupModal);
   $('#restoreBtn').addEventListener('click',showRestoreModal);
   $('#cloudBtn').addEventListener('click',showCloudModal);
+  $('#addonMgmtBtn').addEventListener('click',showAddonMgmt);
 
   // 点击弹窗遮罩关闭
   $('#modalMask').addEventListener('click',e=>{
@@ -2485,6 +2626,11 @@ window.addAddonRow=addAddonRow;
 window.showBatchAddon=showBatchAddon;
 window.applyBatchAddon=applyBatchAddon;
 window.cancelBatchAddon=cancelBatchAddon;
+window.showAddonMgmt=showAddonMgmt;
+window.addMgmtAddonRow=addMgmtAddonRow;
+window.showBatchMgmtAddon=showBatchMgmtAddon;
+window.applyBatchMgmtAddon=applyBatchMgmtAddon;
+window.saveMgmtAddons=saveMgmtAddons;
 window.confirmAddToCart=confirmAddToCart;
 
 // ========== Service Worker 自动更新 ==========
