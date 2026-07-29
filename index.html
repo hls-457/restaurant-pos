@@ -2213,11 +2213,6 @@ function showAddonMgmt(){
           <button class="btn btn-outline btn-sm" style="width:100%" onclick="addMgmtAddonRow()">➕ 添加加料项</button>
         </div>
         <div id="mgmtAddonList">${addonHtml}</div>
-        <button class="btn btn-outline btn-sm" style="width:100%;color:#722ed1;border-color:#722ed1" onclick="showBatchMgmtAddon()">📝 批量输入</button>
-        <div id="batchMgmtArea" style="display:none;margin-top:8px">
-          <textarea id="batchMgmtInput" style="width:100%;height:120px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.8" placeholder="加肉 5&#10;加粉 2&#10;加蛋 3"></textarea>
-          <button class="btn btn-sm" style="width:100%;margin-top:4px" onclick="applyBatchMgmtAddon()">✅ 确认批量添加</button>
-        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-gray" style="flex:1" onclick="closeModal()">取消</button>
@@ -2238,36 +2233,6 @@ function addMgmtAddonRow(name,price){
     <button class="btn btn-sm btn-gray" onclick="this.parentElement.remove()" style="flex:0 0 auto;padding:8px 12px">✕</button>
   `;
   list.appendChild(row);
-}
-
-function showBatchMgmtAddon(){
-  const area=$('#batchMgmtArea');
-  area.style.display=area.style.display==='none'?'block':'none';
-  if(area.style.display==='block')$('#batchMgmtInput').focus();
-}
-
-function applyBatchMgmtAddon(){
-  const text=$('#batchMgmtInput').value.trim();
-  if(!text){showToast('请输入加料内容');return}
-  const lines=text.split('\n').map(l=>l.trim()).filter(l=>l);
-  let count=0;
-  for(let line of lines){
-    const parts=line.split(/[\s,，\t]+/);
-    if(parts.length<2)continue;
-    const price=parseFloat(parts[parts.length-1]);
-    const name=parts.slice(0,-1).join(' ');
-    if(name && !isNaN(price) && price>=0){
-      addMgmtAddonRow(name,price);
-      count++;
-    }
-  }
-  if(count>0){
-    showToast(`已添加 ${count} 个加料项`);
-    $('#batchMgmtInput').value='';
-    $('#batchMgmtArea').style.display='none';
-  }else{
-    showToast('格式不对，请用"名称 价格"格式');
-  }
 }
 
 function saveMgmtAddons(){
@@ -2294,75 +2259,6 @@ function saveMgmtAddons(){
   renderMenuMgmt();
   closeModal();
   showToast('✅ 加料项已保存');
-}
-
-function showBatchAddon(){
-  // 检查是否已经展开了批量输入框
-  const existing=$('#batchAddonArea');
-  if(existing){
-    // 已展开，直接应用
-    applyBatchAddon();
-    return;
-  }
-  // 在加料列表下方插入批量输入框
-  const area=document.createElement('div');
-  area.id='batchAddonArea';
-  area.style.cssText='margin-top:8px;padding:12px;border:2px solid #722ed1;border-radius:8px;background:#f9f0ff';
-  
-  // 读取当前已填的加料
-  const cur=getAddonData();
-  const existingText=cur.map(a=>`${a.name} ${a.price}`).join('\n');
-  
-  area.innerHTML=`
-    <div style="font-size:13px;color:#666;margin-bottom:6px">每行一个加料，格式：<b>名称 价格</b></div>
-    <textarea id="batchAddonInput" style="width:100%;height:120px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.8" placeholder="加肉 5&#10;加粉 2&#10;加蛋 3">${existingText}</textarea>
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <button class="btn btn-sm" style="flex:2" onclick="applyBatchAddon()">✅ 确认添加</button>
-      <button class="btn btn-sm btn-gray" style="flex:1" onclick="cancelBatchAddon()">取消</button>
-    </div>
-  `;
-  // 插入到 addonList 之前
-  const addonList=$('#addonList');
-  addonList.parentNode.insertBefore(area, addonList);
-  // 隐藏逐个添加的行
-  addonList.style.display='none';
-  $('#batchAddonInput').focus();
-}
-
-function cancelBatchAddon(){
-  const area=$('#batchAddonArea');
-  if(area)area.remove();
-  $('#addonList').style.display='';
-}
-
-function applyBatchAddon(){
-  const input=$('#batchAddonInput');
-  if(!input){return}
-  const text=input.value.trim();
-  if(!text){showToast('请输入加料内容');return}
-  const lines=text.split('\n').map(l=>l.trim()).filter(l=>l);
-  // 清空现有加料列表
-  $('#addonList').innerHTML='';
-  let count=0;
-  for(let line of lines){
-    const parts=line.split(/[\s,，\t]+/);
-    if(parts.length<2)continue;
-    const price=parseFloat(parts[parts.length-1]);
-    const name=parts.slice(0,-1).join(' ');
-    if(name && !isNaN(price) && price>=0){
-      addAddonRow(name,price);
-      count++;
-    }
-  }
-  // 移除批量输入区域
-  const area=$('#batchAddonArea');
-  if(area)area.remove();
-  $('#addonList').style.display='';
-  if(count>0){
-    showToast(`已添加 ${count} 个加料项`);
-  }else{
-    showToast('格式不对，请用"名称 价格"格式');
-  }
 }
 
 function addAddonRow(name,price){
@@ -2684,13 +2580,8 @@ window.cloudDownloadUpdate=cloudDownloadUpdate;
 window.cloudIgnoreUpdate=cloudIgnoreUpdate;
 window.manualPull=manualPull;
 window.addAddonRow=addAddonRow;
-window.showBatchAddon=showBatchAddon;
-window.applyBatchAddon=applyBatchAddon;
-window.cancelBatchAddon=cancelBatchAddon;
 window.showAddonMgmt=showAddonMgmt;
 window.addMgmtAddonRow=addMgmtAddonRow;
-window.showBatchMgmtAddon=showBatchMgmtAddon;
-window.applyBatchMgmtAddon=applyBatchMgmtAddon;
 window.saveMgmtAddons=saveMgmtAddons;
 window.confirmAddToCart=confirmAddToCart;
 
