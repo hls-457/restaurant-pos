@@ -66,10 +66,27 @@ input,textarea,select{font-family:inherit;outline:none}
 }
 .tabbar-item{
   flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  gap:2px;color:var(--text-3);font-size:11px;background:none;transition:color .2s;
+  gap:2px;color:var(--text-3);font-size:10px;background:none;transition:color .2s;
 }
 .tabbar-item.active{color:var(--primary)}
-.tabbar-item .icon{font-size:20px;line-height:1}
+.tabbar-item .icon{font-size:18px;line-height:1}
+
+/* 设置页面 */
+.settings-card{
+  display:flex;align-items:center;gap:12px;
+  background:#fff;padding:14px;margin-bottom:8px;border-radius:10px;
+  box-shadow:var(--shadow);cursor:pointer;transition:background .15s;
+}
+.settings-card:active{background:#f5f5f5}
+.settings-icon{
+  width:40px;height:40px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:20px;flex-shrink:0;
+}
+.settings-info{flex:1}
+.settings-name{font-size:15px;font-weight:500;margin-bottom:2px}
+.settings-desc{font-size:12px;color:var(--text-3)}
+.settings-arrow{font-size:20px;color:var(--text-3);flex-shrink:0}
 
 /* 批量操作底部栏 */
 .batch-bar{
@@ -505,15 +522,43 @@ input,textarea,select{font-family:inherit;outline:none}
     <button class="btn btn-outline" id="addCatBtn">📁 新分类</button>
     <button class="btn btn-outline" id="batchDishBtn" style="color:#ff4d4f;border-color:#ff4d4f">☑️ 批量删除</button>
   </div>
-  <div style="margin-bottom:12px;display:flex;gap:8px">
-    <button class="btn btn-outline" id="backupBtn" style="flex:1;color:#1890ff;border-color:#1890ff">☁️ 备份数据</button>
-    <button class="btn btn-outline" id="restoreBtn" style="flex:1;color:#52c41a;border-color:#52c41a">📥 恢复数据</button>
-  </div>
-  <div style="margin-bottom:12px;display:flex;gap:8px">
-    <button class="btn btn-outline" id="cloudBtn" style="flex:1;color:#722ed1;border-color:#722ed1">🔄 云端同步设置</button>
-    <button class="btn btn-outline" id="addonMgmtBtn" style="flex:1;color:#fa8c16;border-color:#fa8c16">🧂 加料项管理</button>
-  </div>
   <div id="menuList"></div>
+</div>
+
+<!-- ========== 设置 ========== -->
+<div class="page" id="page-settings">
+  <div class="settings-card" onclick="showBackupModal()">
+    <span class="settings-icon" style="background:#e6f7ff;color:#1890ff">☁️</span>
+    <div class="settings-info">
+      <div class="settings-name">备份数据</div>
+      <div class="settings-desc">导出所有菜品和订单数据</div>
+    </div>
+    <span class="settings-arrow">›</span>
+  </div>
+  <div class="settings-card" onclick="showRestoreModal()">
+    <span class="settings-icon" style="background:#f6ffed;color:#52c41a">📥</span>
+    <div class="settings-info">
+      <div class="settings-name">恢复数据</div>
+      <div class="settings-desc">从备份码导入数据</div>
+    </div>
+    <span class="settings-arrow">›</span>
+  </div>
+  <div class="settings-card" onclick="showCloudModal()">
+    <span class="settings-icon" style="background:#f9f0ff;color:#722ed1">🔄</span>
+    <div class="settings-info">
+      <div class="settings-name">云端同步</div>
+      <div class="settings-desc" id="cloudSyncStatus">未开启</div>
+    </div>
+    <span class="settings-arrow">›</span>
+  </div>
+  <div class="settings-card" onclick="showAddonMgmt()">
+    <span class="settings-icon" style="background:#fff7e6;color:#fa8c16">🧂</span>
+    <div class="settings-info">
+      <div class="settings-name">加料项管理</div>
+      <div class="settings-desc" id="addonCountStatus">0 个加料项</div>
+    </div>
+    <span class="settings-arrow">›</span>
+  </div>
 </div>
 
 <!-- 批量操作底部栏 -->
@@ -531,7 +576,8 @@ input,textarea,select{font-family:inherit;outline:none}
   <button class="tabbar-item active" data-page="order"><span class="icon">🍽️</span>点单</button>
   <button class="tabbar-item" data-page="orders"><span class="icon">📋</span>订单</button>
   <button class="tabbar-item" data-page="stats"><span class="icon">📊</span>统计</button>
-  <button class="tabbar-item" data-page="menu"><span class="icon">⚙️</span>菜单</button>
+  <button class="tabbar-item" data-page="menu"><span class="icon">🍜</span>菜单</button>
+  <button class="tabbar-item" data-page="settings"><span class="icon">⚙️</span>设置</button>
 </div>
 
 <!-- 弹窗容器 -->
@@ -858,7 +904,22 @@ function switchPage(page){
   if(page==='orders')renderOrders();
   if(page==='stats')renderStats();
   if(page==='menu')renderMenuMgmt();
+  if(page==='settings')updateSettingsPage();
   $('.main').scrollTop=0;
+}
+
+function updateSettingsPage(){
+  // 更新云端同步状态
+  const cloudEl=$('#cloudSyncStatus');
+  if(cloudEl){
+    const cfg=CLOUD.getConfig();
+    cloudEl.textContent=CLOUD.isConfigured()?('已开启 · '+ (cfg.lastSync||'未同步')):'未开启';
+  }
+  // 更新加料项数量
+  const addonEl=$('#addonCountStatus');
+  if(addonEl){
+    addonEl.textContent=DB.getAddons().length+' 个加料项';
+  }
 }
 
 // ========== 点单台 ==========
@@ -2545,10 +2606,10 @@ function init(){
     if(!state.menuBatchMode)state.menuSelected={};
     renderMenuMgmt();
   });
-  $('#backupBtn').addEventListener('click',showBackupModal);
-  $('#restoreBtn').addEventListener('click',showRestoreModal);
-  $('#cloudBtn').addEventListener('click',showCloudModal);
-  $('#addonMgmtBtn').addEventListener('click',showAddonMgmt);
+  $('#backupBtn') && $('#backupBtn').addEventListener('click',showBackupModal);
+  $('#restoreBtn') && $('#restoreBtn').addEventListener('click',showRestoreModal);
+  $('#cloudBtn') && $('#cloudBtn').addEventListener('click',showCloudModal);
+  $('#addonMgmtBtn') && $('#addonMgmtBtn').addEventListener('click',showAddonMgmt);
 
   // 点击弹窗遮罩关闭
   $('#modalMask').addEventListener('click',e=>{
