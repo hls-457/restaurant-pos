@@ -2164,7 +2164,15 @@ function renderDishAddonPicker(selectedAddons){
     return;
   }
   const selectedNames=(selectedAddons||[]).map(a=>a.name);
-  list.innerHTML=allAddons.map((a,i)=>{
+  const allChecked=selectedNames.length===allAddons.length;
+  const headerHtml=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <span style="font-size:13px;color:#666">${allAddons.length} 个加料项可选</span>
+    <label style="font-size:13px;color:var(--primary);cursor:pointer;display:flex;align-items:center;gap:4px">
+      <input type="checkbox" id="addonSelectAll" ${allChecked?'checked':''} onchange="toggleAllAddons(this.checked)" style="width:16px;height:16px;vertical-align:middle">
+      全选
+    </label>
+  </div>`;
+  const itemsHtml=allAddons.map((a,i)=>{
     const checked=selectedNames.includes(a.name);
     return `<label style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
       <span style="display:flex;align-items:center;gap:8px">
@@ -2174,6 +2182,13 @@ function renderDishAddonPicker(selectedAddons){
       <span style="color:var(--primary);font-weight:600">+${a.price}元</span>
     </label>`;
   }).join('');
+  list.innerHTML=headerHtml+itemsHtml;
+}
+
+function toggleAllAddons(checked){
+  document.querySelectorAll('.dish-addon-checkbox').forEach(cb=>{
+    cb.checked=checked;
+  });
 }
 
 // 获取菜品编辑中选中的加料
@@ -2583,6 +2598,7 @@ window.addAddonRow=addAddonRow;
 window.showAddonMgmt=showAddonMgmt;
 window.addMgmtAddonRow=addMgmtAddonRow;
 window.saveMgmtAddons=saveMgmtAddons;
+window.toggleAllAddons=toggleAllAddons;
 window.confirmAddToCart=confirmAddToCart;
 
 // ========== Service Worker 自动更新 ==========
