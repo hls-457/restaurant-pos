@@ -834,9 +834,10 @@ function renderDishes(){
   }
   const html=list.map(d=>{
     const inCart=state.cart.items.find(i=>i.dishId===d.id);
+    const hasAddons=d.addons&&d.addons.length>0;
     return `<div class="dish-card" onclick="addToCart('${d.id}')">
       ${inCart?`<div class="dish-badge">${inCart.qty}</div>`:''}
-      <div class="dish-name">${escapeHtml(d.name)}</div>
+      <div class="dish-name">${escapeHtml(d.name)}${hasAddons?' <span style="font-size:10px;color:#fa8c16">+加料</span>':''}</div>
       <div class="dish-price">${d.price}</div>
     </div>`;
   }).join('');
@@ -846,13 +847,88 @@ function renderDishes(){
 function addToCart(dishId){
   const dish=state.dishes.find(d=>d.id===dishId);
   if(!dish)return;
-  const item=state.cart.items.find(i=>i.dishId===dishId);
+  // 如果有加料项，弹出选择框
+  if(dish.addons && dish.addons.length>0){
+    showAddonPicker(dish);
+    return;
+  }
+  // 没有加料项，直接加入
+  const item=state.cart.items.find(i=>i.dishId===dishId && !i.addons);
   if(item){
     item.qty++;
   }else{
-    state.cart.items.push({dishId:dishId,name:dish.name,price:dish.price,qty:1,note:''});
+    state.cart.items.push({dishId:dishId,name:dish.name,price:dish.price,qty:1,note:'',addons:[]});
   }
   DB.saveCart(state.cart);
+  renderCart();
+  renderDishes();
+}
+
+function showAddonPicker(dish){
+  const addonHtml=dish.addons.map((a,i)=>`
+    <label style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer">
+      <span style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" class="addon-checkbox" data-idx="${i}" style="width:18px;height:18px">
+        <span style="font-size:14px">${escapeHtml(a.name)}</span>
+      </span>
+      <span style="color:var(--primary);font-weight:600">+${a.price}元</span>
+    </label>
+  `).join('');
+  
+  $('#modalMask').innerHTML=`
+    <div class="modal">
+      <div class="modal-header">${escapeHtml(dish.name)} - 选择加料</div>
+      <div class="modal-body">
+        <div style="font-size:13px;color:#999;margin-bottom:12px">基础价格 ${dish.price}元，勾选需要的加料：</div>
+        ${addonHtml}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-gray" style="flex:1" onclick="closeModal()">取消</button>
+        <button class="btn" style="flex:2" onclick="confirmAddToCart('${dish.id}')">加入购物车</button>
+      </div>
+    </div>
+  `;
+  $('#modalMask').classList.add('show');
+}
+
+function confirmAddToCart(dishId){
+  const dish=state.dishes.find(d=>d.id===dishId);
+  if(!dish)return;
+  // 获取选中的加料
+  const checkboxes=document.querySelectorAll('.addon-checkbox');
+  const selectedAddons=[];
+  checkboxes.forEach(cb=>{
+    if(cb.checked){
+      const idx=parseInt(cb.dataset.idx);
+      selectedAddons.push(dish.addons[idx]);
+    }
+  });
+  // 计算单价 = 基础价 + 加料价
+  const addonTotal=selectedAddons.reduce((s,a)=>s+a.price,0);
+  const unitPrice=dish.price+addonTotal;
+  
+  // 检查购物车中是否已有完全相同的组合（同菜品+同加料）
+  const addonKey=selectedAddons.map(a=>a.name).sort().join(',');
+  const existing=state.cart.items.find(i=>
+    i.dishId===dishId && 
+    i.addons &&
+    i.addons.map(a=>a.name).sort().join(',')===addonKey
+  );
+  if(existing){
+    existing.qty++;
+  }else{
+    state.cart.items.push({
+      dishId:dishId,
+      name:dish.name,
+      price:unitPrice,
+      basePrice:dish.price,
+      qty:1,
+      note:'',
+      addons:selectedAddons
+    });
+  }
+  DB.saveCart(state.cart);
+  closeModal();
   renderCart();
   renderDishes();
 }
@@ -894,9 +970,11 @@ function renderCart(){
     return;
   }
 
-  const html=items.map(i=>`<div class="cart-item">
+  const html=items.map(i=>{
+    const addonText=i.addons&&i.addons.length?i.addons.map(a=>`+${escapeHtml(a.name)}(${a.price}元)`).join(' '):'';
+    return `<div class="cart-item">
     <div class="cart-item-top">
-      <span class="cart-item-name">${escapeHtml(i.name)}</span>
+      <span class="cart-item-name">${escapeHtml(i.name)}${addonText?` <span style="font-size:12px;color:#fa8c16">${addonText}</span>`:''}</span>
       <span class="cart-item-price">¥${(i.price*i.qty).toFixed(2)}</span>
     </div>
     <input class="note-input" placeholder="备注（如少辣、不要葱）" value="${escapeHtml(i.note)}" onchange="updateCartNote('${i.dishId}',this.value)">
@@ -908,7 +986,8 @@ function renderCart(){
       </div>
       <button class="cart-item-del" onclick="removeFromCart('${i.dishId}')">删除</button>
     </div>
-  </div>`).join('');
+  </div>`;
+  }).join('');
 
   $('#cartItems').innerHTML=html;
   $('#cartTotalAmount').textContent=total.toFixed(2);
@@ -1001,9 +1080,11 @@ function editOrder(orderId){
 function renderEditOrderModal(){
   const o=state.editingOrder;
   if(!o)return;
-  const itemsHtml=o.items.map((i,idx)=>`<div class="cart-item" style="border-bottom:1px solid var(--border)">
+  const itemsHtml=o.items.map((i,idx)=>{
+    const addonText=i.addons&&i.addons.length?i.addons.map(a=>`+${escapeHtml(a.name)}(${a.price}元)`).join(' '):'';
+    return `<div class="cart-item" style="border-bottom:1px solid var(--border)">
     <div class="cart-item-top">
-      <span class="cart-item-name">${escapeHtml(i.name)}</span>
+      <span class="cart-item-name">${escapeHtml(i.name)}${addonText?` <span style="font-size:12px;color:#fa8c16">${addonText}</span>`:''}</span>
       <span class="cart-item-price">¥${(i.price*i.qty).toFixed(2)}</span>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
@@ -1014,7 +1095,8 @@ function renderEditOrderModal(){
       </div>
       <button class="cart-item-del" onclick="editOrderDel(${idx})">删除</button>
     </div>
-  </div>`).join('');
+  </div>`;
+  }).join('');
   const html=`<div class="modal">
     <div class="modal-header">编辑订单 #${o.orderNumber}</div>
     <div class="modal-body">
@@ -1590,25 +1672,74 @@ function showCloudModal(){
 async function enableCloud(){
   const token=$('#cloudTokenInput').value.trim();
   if(!token){showToast('请输入GitHub Token');return}
-  showToast('正在开启...');
-  const result=await CLOUD.enable(token);
-  if(result.success){
-    if(result.hasData && result.data){
-      // 云端有数据，覆盖本地
-      DB.saveDishes(result.data.dishes);
-      if(result.data.orders)DB.saveOrders(result.data.orders);
-      if(result.data.config)DB.saveConfig(result.data.config);
-      state.dishes=DB.getDishes();
-      state.orders=DB.getOrders();
-      renderCatTabs();renderDishes();renderCart();renderOrders();renderMenuMgmt();
-      showToast('✅ 已从云端同步数据！');
-    }else{
+  showToast('正在检查云端...');
+  // 先保存token配置但暂不开启
+  CLOUD.saveConfig({token:token, lastSync:'', enabled:true});
+  // 检查云端是否有数据
+  const cloudData=await CLOUD.pull();
+  if(cloudData && !cloudData.empty && cloudData.dishes){
+    // 云端有数据，让用户选择
+    const cloudCount=cloudData.dishes.length;
+    const localCount=DB.getDishes().length;
+    const cloudTime=cloudData.syncTime?new Date(cloudData.syncTime).toLocaleString():'未知';
+    $('#modalMask').innerHTML=`
+      <div class="modal-title">🔄 云端已有数据</div>
+      <div style="padding:16px 0">
+        <div style="padding:12px;border-radius:8px;margin-bottom:12px;background:#fff7e6;border:1px solid #ffd591">
+          <div style="font-size:13px;color:#666;margin-bottom:8px">
+            云端有 <b>${cloudCount}</b> 个菜品（同步时间：${cloudTime}）<br>
+            本地有 <b>${localCount}</b> 个菜品
+          </div>
+          <div style="font-size:13px;color:#ff4d4f;font-weight:600;margin-bottom:12px">
+            请选择以哪个为准：
+          </div>
+        </div>
+        <button class="btn" style="width:100%;margin-bottom:8px;background:#52c41a" onclick="cloudUploadFirst()">⬆️ 以本地为准（上传覆盖云端）</button>
+        <p style="font-size:12px;color:#999;margin-bottom:12px;padding-left:4px">选择此项会把你当前的菜品上传到云端</p>
+        <button class="btn" style="width:100%;margin-bottom:8px;background:#1890ff" onclick="cloudDownloadFirst()">⬇️ 以云端为准（下载覆盖本地）</button>
+        <p style="font-size:12px;color:#999;margin-bottom:12px;padding-left:4px">选择此项会用云端数据替换当前本地数据</p>
+        <button class="btn btn-outline" style="width:100%" onclick="disableCloud()">取消，不同步</button>
+      </div>
+    `;
+    // 暂存云端数据供选择后使用
+    window._cloudPendingData=cloudData;
+  }else{
+    // 云端无数据，直接上传本地
+    showToast('正在上传...');
+    const ok=await CLOUD.push();
+    if(ok){
       showToast('✅ 云端同步已开启，数据已上传！');
+      closeModal();
+    }else{
+      showToast('❌ 上传失败，请检查Token');
+      CLOUD.disable();
     }
+  }
+}
+
+async function cloudUploadFirst(){
+  showToast('正在上传本地数据...');
+  const ok=await CLOUD.push();
+  if(ok){
+    showToast('✅ 本地数据已上传到云端！');
     closeModal();
   }else{
-    showToast('❌ 开启失败，请检查Token是否正确');
+    showToast('❌ 上传失败');
   }
+}
+
+async function cloudDownloadFirst(){
+  const cloudData=window._cloudPendingData;
+  if(!cloudData){showToast('数据已过期，请重试');return}
+  if(!confirmDialog('确定用云端数据覆盖本地吗？当前本地数据将丢失！'))return;
+  DB.saveDishes(cloudData.dishes);
+  if(cloudData.orders)DB.saveOrders(cloudData.orders);
+  if(cloudData.config)DB.saveConfig(cloudData.config);
+  state.dishes=DB.getDishes();
+  state.orders=DB.getOrders();
+  renderCatTabs();renderDishes();renderCart();renderOrders();renderMenuMgmt();
+  showToast('✅ 已从云端下载数据！');
+  closeModal();
 }
 
 async function manualSync(){
@@ -1822,6 +1953,7 @@ function deleteDish(id){
 function showDishForm(dish){
   const cats=[...new Set(state.dishes.map(d=>d.category))];
   const catOptions=cats.map(c=>`<option value="${escapeHtml(c)}" ${dish&&dish.category===c?'selected':''}>${escapeHtml(c)}</option>`).join('');
+  const addons=dish&&dish.addons?dish.addons:[];
   const html=`<div class="modal">
     <div class="modal-header">${dish?'编辑菜品':'新增菜品'}</div>
     <div class="modal-body">
@@ -1846,6 +1978,11 @@ function showDishForm(dish){
         <label class="form-label">新分类名称</label>
         <input type="text" class="form-input" id="dishFormNewCat" placeholder="输入新分类名">
       </div>
+      <div class="form-group">
+        <label class="form-label">可加项（加料）<span style="font-weight:400;color:#999;font-size:12px">点菜时弹出供选择</span></label>
+        <div id="addonList" style="margin-bottom:8px"></div>
+        <button class="btn btn-outline btn-sm" style="width:100%" onclick="addAddonRow()">➕ 添加加料项</button>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-gray" style="flex:1" onclick="closeModal()">取消</button>
@@ -1857,6 +1994,35 @@ function showDishForm(dish){
   $('#dishFormCat').onchange=function(){
     $('#newCatGroup').style.display=this.value==='__new__'?'block':'none';
   };
+  // 渲染已有的加料项
+  if(addons.length){
+    addons.forEach(a=>addAddonRow(a.name,a.price));
+  }
+}
+
+function addAddonRow(name,price){
+  const list=$('#addonList');
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;gap:8px;margin-bottom:6px;align-items:center';
+  row.innerHTML=`
+    <input type="text" class="form-input addon-name" placeholder="加料名（如加肉）" value="${name?escapeHtml(name):''}" style="flex:2">
+    <input type="number" class="form-input addon-price" placeholder="价格" value="${price!==undefined?price:''}" step="0.01" min="0" style="flex:1">
+    <button class="btn btn-sm btn-gray" onclick="this.parentElement.remove()" style="flex:0 0 auto;padding:8px 12px">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+function getAddonData(){
+  const rows=$('#addonList').children;
+  const addons=[];
+  for(let r of rows){
+    const name=r.querySelector('.addon-name').value.trim();
+    const price=parseFloat(r.querySelector('.addon-price').value);
+    if(name && !isNaN(price) && price>=0){
+      addons.push({name,price});
+    }
+  }
+  return addons;
 }
 
 function saveDishForm(){
@@ -1873,11 +2039,13 @@ function saveDishForm(){
   if(state.editingDish){
     const d=state.editingDish;
     d.name=name;d.price=price;d.category=cat;
+    d.addons=getAddonData();
     showToast('已保存修改');
   }else{
     const newDish={
       id:'d'+Date.now(),
       name,price,category:cat,
+      addons:getAddonData(),
       available:true,
       sortOrder:state.dishes.length,
       createdAt:Date.now(),
@@ -2154,6 +2322,8 @@ window.doRestore=doRestore;
 window.enableCloud=enableCloud;
 window.manualSync=manualSync;
 window.disableCloud=disableCloud;
+window.addAddonRow=addAddonRow;
+window.confirmAddToCart=confirmAddToCart;
 
 // ========== Service Worker 自动更新 ==========
 const APP_VERSION = '2.6';
