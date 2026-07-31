@@ -2214,7 +2214,8 @@ function getDishSelectedAddons(){
 function showAddonMgmt(){
   const addons=DB.getAddons();
   const addonHtml=addons.map((a,i)=>`
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center" data-idx="${i}">
+    <div class="mgmt-addon-row" draggable="true" data-idx="${i}" ondragstart="onAddonDragStart(event,${i})" ondragover="onAddonDragOver(event,${i})" ondragleave="onAddonDragLeave(event)" ondrop="onAddonDrop(event,${i})" ontouchstart="onAddonTouchStart(event,${i})" ontouchmove="onAddonTouchMove(event)" ontouchend="onAddonTouchEnd(event)" style="display:flex;gap:8px;margin-bottom:8px;align-items:center;padding:4px 6px;border:1px solid var(--border);border-radius:8px;transition:background .15s,opacity .15s">
+      <span class="drag-handle" style="cursor:grab;font-size:18px;color:#999;flex-shrink:0;padding:0 4px">⠿</span>
       <input type="text" class="form-input mgmt-addon-name" value="${escapeHtml(a.name)}" placeholder="加料名" style="flex:2">
       <input type="number" class="form-input mgmt-addon-price" value="${a.price}" placeholder="价格" step="0.01" min="0" style="flex:1">
       <button class="btn btn-sm btn-gray" onclick="this.parentElement.remove()" style="flex:0 0 auto;padding:8px 12px">✕</button>
@@ -2224,9 +2225,9 @@ function showAddonMgmt(){
     <div class="modal">
       <div class="modal-header">🧂 加料项管理</div>
       <div class="modal-body">
-        <p style="font-size:13px;color:#666;margin-bottom:12px">
-          在这里统一添加所有加料项，每个菜品只需勾选启用哪些。<br>
-          <span style="color:#999">修改价格后，所有使用了该加料的菜品自动更新</span>
+        <p style="font-size:13px;color:#666;margin-bottom:8px">
+          长按 ⠿ 拖动可调整顺序，顺序会同步到点单页面<br>
+          <span style="color:#999">修改价格后，所有菜品的加料自动更新</span>
         </p>
         <div style="margin-bottom:8px">
           <button class="btn btn-outline btn-sm" style="width:100%" onclick="addMgmtAddonRow()">➕ 添加加料项</button>
@@ -2242,11 +2243,96 @@ function showAddonMgmt(){
   $('#modalMask').classList.add('show');
 }
 
+// 加料拖拽排序
+let _dragAddonIdx=null;
+
+function onAddonDragStart(e,idx){
+  _dragAddonIdx=idx;
+  e.target.closest('.mgmt-addon-row').classList.add('dragging');
+  if(e.dataTransfer){e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(idx))}
+}
+
+function onAddonDragOver(e,idx){
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over');
+}
+
+function onAddonDragLeave(e){
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function onAddonDrop(e,idx){
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if(_dragAddonIdx===null||_dragAddonIdx===idx)return;
+  const list=$('#mgmtAddonList');
+  const rows=Array.from(list.children);
+  const fromRow=rows[_dragAddonIdx];
+  const toRow=rows[idx];
+  if(_dragAddonIdx<idx){
+    list.insertBefore(fromRow,toRow.nextSibling);
+  }else{
+    list.insertBefore(fromRow,toRow);
+  }
+  _dragAddonIdx=null;
+  // 更新data-idx
+  Array.from(list.children).forEach((r,i)=>r.dataset.idx=i);
+}
+
+// 触摸拖拽（手机）
+let _addonTouchEl=null,_addonTouchY=0;
+
+function onAddonTouchStart(e,idx){
+  const touch=e.touches[0];
+  _addonTouchY=touch.clientY;
+  const rows=Array.from($('#mgmtAddonList').children);
+  _addonTouchEl=rows[idx];
+  _dragAddonIdx=idx;
+}
+
+function onAddonTouchMove(e){
+  if(_dragAddonIdx===null)return;
+  const touch=e.touches[0];
+  const y=touch.clientY;
+  const rows=Array.from($('#mgmtAddonList').children);
+  for(let i=0;i<rows.length;i++){
+    if(i===_dragAddonIdx)continue;
+    const rect=rows[i].getBoundingClientRect();
+    if(y>rect.top && y<rect.bottom){
+      if(_dragAddonIdx<i){
+        rows[i].parentNode.insertBefore(rows[_dragAddonIdx],rows[i].nextSibling);
+      }else{
+        rows[i].parentNode.insertBefore(rows[_dragAddonIdx],rows[i]);
+      }
+      _dragAddonIdx=i;
+      Array.from(rows[i].parentNode.children).forEach((r,j)=>r.dataset.idx=j);
+      break;
+    }
+  }
+}
+
+function onAddonTouchEnd(e){
+  _dragAddonIdx=null;
+  _addonTouchEl=null;
+}
+
 function addMgmtAddonRow(name,price){
   const list=$('#mgmtAddonList');
   const row=document.createElement('div');
-  row.style.cssText='display:flex;gap:8px;margin-bottom:8px;align-items:center';
+  row.className='mgmt-addon-row';
+  row.setAttribute('draggable','true');
+  row.style.cssText='display:flex;gap:8px;margin-bottom:8px;align-items:center;padding:4px 6px;border:1px solid var(--border);border-radius:8px;transition:background .15s,opacity .15s';
+  const idx=list.children.length;
+  row.dataset.idx=idx;
+  row.setAttribute('ondragstart','onAddonDragStart(event,'+idx+')');
+  row.setAttribute('ondragover','onAddonDragOver(event,'+idx+')');
+  row.setAttribute('ondragleave','onAddonDragLeave(event)');
+  row.setAttribute('ondrop','onAddonDrop(event,'+idx+')');
+  row.setAttribute('ontouchstart','onAddonTouchStart(event,'+idx+')');
+  row.setAttribute('ontouchmove','onAddonTouchMove(event)');
+  row.setAttribute('ontouchend','onAddonTouchEnd(event)');
   row.innerHTML=`
+    <span class="drag-handle" style="cursor:grab;font-size:18px;color:#999;flex-shrink:0;padding:0 4px">⠿</span>
     <input type="text" class="form-input mgmt-addon-name" value="${name?escapeHtml(name):''}" placeholder="加料名" style="flex:2">
     <input type="number" class="form-input mgmt-addon-price" value="${price!==undefined?price:''}" placeholder="价格" step="0.01" min="0" style="flex:1">
     <button class="btn btn-sm btn-gray" onclick="this.parentElement.remove()" style="flex:0 0 auto;padding:8px 12px">✕</button>
@@ -2265,13 +2351,11 @@ function saveMgmtAddons(){
     }
   }
   DB.saveAddons(addons);
-  // 同步更新所有菜品引用的加料价格
+  // 同步更新所有菜品：按全局顺序重新排列加料，并更新价格
   state.dishes.forEach(d=>{
     if(d.addons&&d.addons.length){
-      d.addons=d.addons.map(da=>{
-        const global=addons.find(a=>a.name===da.name);
-        return global?{name:global.name,price:global.price}:da;
-      });
+      // 按全局addons的顺序重新排列菜品加料
+      d.addons=addons.filter(ga=>d.addons.some(da=>da.name===ga.name)).map(ga=>({name:ga.name,price:ga.price}));
     }
   });
   DB.saveDishes(state.dishes);
@@ -2602,6 +2686,13 @@ window.addAddonRow=addAddonRow;
 window.showAddonMgmt=showAddonMgmt;
 window.addMgmtAddonRow=addMgmtAddonRow;
 window.saveMgmtAddons=saveMgmtAddons;
+window.onAddonDragStart=onAddonDragStart;
+window.onAddonDragOver=onAddonDragOver;
+window.onAddonDragLeave=onAddonDragLeave;
+window.onAddonDrop=onAddonDrop;
+window.onAddonTouchStart=onAddonTouchStart;
+window.onAddonTouchMove=onAddonTouchMove;
+window.onAddonTouchEnd=onAddonTouchEnd;
 window.toggleAllAddons=toggleAllAddons;
 window.confirmAddToCart=confirmAddToCart;
 
