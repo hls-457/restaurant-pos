@@ -1043,27 +1043,27 @@ function confirmAddToCart(dishId){
   renderDishes();
 }
 
-function changeQty(dishId,delta){
-  const item=state.cart.items.find(i=>i.dishId===dishId);
+function changeQty(idx,delta){
+  const item=state.cart.items[idx];
   if(!item)return;
   item.qty+=delta;
   if(item.qty<=0){
-    state.cart.items=state.cart.items.filter(i=>i.dishId!==dishId);
+    state.cart.items.splice(idx,1);
   }
   DB.saveCart(state.cart);
   renderCart();
   renderDishes();
 }
 
-function removeFromCart(dishId){
-  state.cart.items=state.cart.items.filter(i=>i.dishId!==dishId);
+function removeFromCart(idx){
+  state.cart.items.splice(idx,1);
   DB.saveCart(state.cart);
   renderCart();
   renderDishes();
 }
 
-function updateCartNote(dishId,note){
-  const item=state.cart.items.find(i=>i.dishId===dishId);
+function updateCartNote(idx,note){
+  const item=state.cart.items[idx];
   if(item){item.note=note;DB.saveCart(state.cart)}
 }
 
@@ -1080,21 +1080,21 @@ function renderCart(){
     return;
   }
 
-  const html=items.map(i=>{
+  const html=items.map((i,idx)=>{
     const addonText=i.addons&&i.addons.length?i.addons.map(a=>`+${escapeHtml(a.name)}(${a.price}元)`).join(' '):'';
     return `<div class="cart-item">
     <div class="cart-item-top">
       <span class="cart-item-name">${escapeHtml(i.name)}${addonText?` <span style="font-size:12px;color:#fa8c16">${addonText}</span>`:''}</span>
       <span class="cart-item-price">¥${(i.price*i.qty).toFixed(2)}</span>
     </div>
-    <input class="note-input" placeholder="备注（如少辣、不要葱）" value="${escapeHtml(i.note)}" onchange="updateCartNote('${i.dishId}',this.value)">
+    <input class="note-input" placeholder="备注（如少辣、不要葱）" value="${escapeHtml(i.note)}" onchange="updateCartNote(${idx},this.value)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
       <div class="qty-control">
-        <button class="qty-btn" onclick="changeQty('${i.dishId}',-1)">−</button>
+        <button class="qty-btn" onclick="changeQty(${idx},-1)">−</button>
         <span class="qty-num">${i.qty}</span>
-        <button class="qty-btn" onclick="changeQty('${i.dishId}',1)">+</button>
+        <button class="qty-btn" onclick="changeQty(${idx},1)">+</button>
       </div>
-      <button class="cart-item-del" onclick="removeFromCart('${i.dishId}')">删除</button>
+      <button class="cart-item-del" onclick="removeFromCart(${idx})">删除</button>
     </div>
   </div>`;
   }).join('');
